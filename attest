@@ -1,0 +1,161 @@
+#!/usr/bin/env python3
+"""attest — module attestations on EAS (Base). EXPERIMENTAL, read-first.
+
+  attest check REPO_URL SHA      who has vouched for this exact module version?
+                                 (read-only — queries base.easscan.org, no keys)
+  attest trust                   show the local trust list
+  attest schema                  the EAS schema this module expects + how to
+                                 register it / publish an attestation (human step)
+
+Design (see PLAN.md §6): an attestation is a signed onchain fact —
+"key X audited (repo, sha) and vouches" — over the schema
+  string repoUrl, string commitSha, string moduleName, bool safe, string notes
+Trust is LOCAL: trust.list here holds the attester addresses this operator
+believes (one 0x… per line, # comments ok). Attestations add signal; they
+never replace reading the code (skills/module).
+
+v0 deliberately does NOT sign transactions: `check` is read-only; publishing
+an attestation is a human step via easscan (see `attest schema`). Config:
+EAS_SCHEMA_UID env or schema.uid file here, once the schema is registered.
+"""
+import json
+import os
+import sys
+import urllib.request
+
+MODULE_DIR = os.path.dirname(os.path.abspath(__file__))
+GRAPHQL = os.environ.get("EAS_GRAPHQL", "https://base.easscan.org/graphql")
+SCHEMA_DEF = ("string repoUrl, string commitSha, string moduleName, "
+              "bool safe, string notes")
+EAS_CONTRACT = "0x4200000000000000000000000000000000000021"       # Base predeploy
+SCHEMA_REGISTRY = "0x4200000000000000000000000000000000000020"    # Base predeploy
+
+
+def schema_uid():
+    uid = os.environ.get("EAS_SCHEMA_UID", "").strip()
+    if uid:
+        return uid
+    try:
+        with open(os.path.join(MODULE_DIR, "schema.uid"), encoding="utf-8") as f:
+            return f.read().strip()
+    except OSError:
+        return None
+
+
+def trust_list():
+    out = set()
+    try:
+        with open(os.path.join(MODULE_DIR, "trust.list"), encoding="utf-8") as f:
+            for line in f:
+                line = line.split("#")[0].strip().lower()
+                if line.startswith("0x") and len(line) == 42:
+                    out.add(line)
+    except OSError:
+        pass
+    return out
+
+
+def gql(query, variables):
+    body = json.dumps({"query": query, "variables": variables}).encode()
+    req = urllib.request.Request(
+        GRAPHQL, data=body, headers={"Content-Type": "application/json"})
+    with urllib.request.urlopen(req, timeout=20) as r:
+        return json.loads(r.read().decode())
+
+
+QUERY = """
+query Atts($schemaId: String!) {
+  attestations(
+    where: { schemaId: { equals: $schemaId }, revoked: { equals: false } }
+    orderBy: { time: desc }
+    take: 200
+  ) { attester time decodedDataJson }
+}
+"""
+
+
+def cmd_check(args):
+    if len(args) < 2:
+        print("usage: attest check REPO_URL SHA", file=sys.stderr)
+        return 2
+    repo, sha = args[0].rstrip("/").removesuffix(".git"), args[1]
+    uid = schema_uid()
+    if not uid:
+        print("attest: no schema registered yet — run `attest schema` for "
+              "the one-time human setup. Until then: audit the code "
+              "yourself (you were going to anyway).")
+        return 1
+    try:
+        data = gql(QUERY, {"schemaId": uid})
+    except Exception as e:
+        print(f"attest: indexer unreachable ({e}) — treat as zero "
+              "attestations and rely on your own audit", file=sys.stderr)
+        return 1
+    trusted = trust_list()
+    hits = []
+    for a in (data.get("data") or {}).get("attestations") or []:
+        try:
+            fields = {f["name"]: f["value"]["value"]
+                      for f in json.loads(a["decodedDataJson"])}
+        except (ValueError, KeyError, TypeError):
+            continue
+        if (str(fields.get("repoUrl", "")).rstrip("/").removesuffix(".git")
+                == repo and str(fields.get("commitSha", "")) == sha):
+            hits.append((a["attester"].lower(), bool(fields.get("safe")),
+                         str(fields.get("notes", ""))[:80]))
+    if not hits:
+        print(f"attest: 0 attestations for {repo} @ {sha[:9]} — your own "
+              "audit is the only signal")
+        return 0
+    n_trust = 0
+    for who, safe, notes in hits:
+        mark = "TRUSTED" if who in trusted else "unknown"
+        n_trust += (who in trusted)
+        verdict = "safe" if safe else "NOT SAFE"
+        print(f"  {who}  {verdict:<9} [{mark}] {notes}")
+    print(f"attest: {len(hits)} attestation(s), {n_trust} from your trust "
+          "list. Signal, not a substitute for the audit.")
+    return 0
+
+
+def cmd_trust(_args):
+    t = trust_list()
+    if not t:
+        print("attest: trust.list is empty — add attester addresses you "
+              "believe, one 0x… per line")
+        return 0
+    for a in sorted(t):
+        print(f"  {a}")
+    return 0
+
+
+def cmd_schema(_args):
+    print(f"""attest: EAS on Base (chain id 8453)
+  schema:          {SCHEMA_DEF}
+  schema registry: {SCHEMA_REGISTRY}
+  EAS contract:    {EAS_CONTRACT}
+
+One-time setup (HUMAN step — needs a wallet, costs pennies of gas):
+  1. Register the schema at https://base.easscan.org/schema/create
+     (paste the schema string above, no resolver, revocable: yes).
+  2. Save the resulting schema UID: echo 0x… > {MODULE_DIR}/schema.uid
+     (commit it in this module so every operator queries the same schema).
+
+Publishing an attestation (after YOU audited a module version):
+  https://base.easscan.org/attestation/attestWithSchema/<schema-uid>
+  fill repoUrl (https form, no .git), commitSha (full 40-hex), moduleName,
+  safe, notes. Signing from a script comes later — deliberately: v0 keeps
+  private keys out of this module entirely.""")
+    return 0
+
+
+def main():
+    verbs = {"check": cmd_check, "trust": cmd_trust, "schema": cmd_schema}
+    if len(sys.argv) < 2 or sys.argv[1] not in verbs:
+        print(__doc__.strip(), file=sys.stderr)
+        return 2
+    return verbs[sys.argv[1]](sys.argv[2:])
+
+
+if __name__ == "__main__":
+    sys.exit(main())

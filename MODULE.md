@@ -25,9 +25,14 @@ version signs nothing and holds no keys.
 
 ## Wiring
 
-`tools/module add …`, then optionally seed `trust.list`. The install flow in
-skills/module gains one line once a schema exists: "run `attest check` on
-the pinned SHA; for modules touching money/credentials, want ≥1 trusted."
+`tools/module add …`, then optionally seed `trust.list`. The brain's
+`skills/module` already integrates both directions of the loop: the
+install audit runs `attest check` on the pinned SHA (flagging zero trusted
+attestations for money/credential modules), and the "Closing the loop"
+section has the agent offer the human a pre-filled attest-back after a
+module has proven itself in real use — including `safe: false` when one
+misbehaved. Until the schema is registered, `check` says so and defers to
+your own audit.
 
 ## What can go wrong
 

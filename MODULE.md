@@ -1,6 +1,6 @@
 # attest — module attestations on EAS (Base) · EXPERIMENTAL
 
-The trust layer from PLAN.md §6, v0: third-party "I audited this exact
+The module-trust layer, v0: third-party "I audited this exact
 (repo, sha) and vouch" as onchain EAS attestations, with a **local** trust
 list — a web of trust, not a global score. Read-first by design: this
 version signs nothing and holds no keys.
@@ -44,8 +44,8 @@ your own audit.
 - An empty/wrong trust.list makes every attester "unknown" — that's honest,
   not broken.
 - v0 signs nothing on purpose: an unattended agent holding an attestation
-  key is exactly the thing to design carefully, later (bonds/challenges are
-  further still — PLAN.md §7).
+  key is exactly the thing to design carefully, later (economic
+  bonds/challenges are further still — deliberately deferred).
 
 ## How to uninstall
 
